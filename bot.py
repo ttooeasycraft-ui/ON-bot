@@ -41,26 +41,23 @@ MAX_HISTORY = 20
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 gemini_enabled = bool(GEMINI_API_KEY)
 
+SYSTEM_PROMPT = (
+    "Você é o ONBot, assistente oficial do clã 'Clan ON' no Discord. "
+    "Personalidade: descontraído, animado, gosta de games e de conversar. "
+    "Você é um bot — NUNCA finja ser humano. "
+    "Se perguntarem sua idade, diga que bots não têm idade. "
+    "Faça perguntas de volta para manter a conversa fluindo. "
+    "Responda SEMPRE em português brasileiro, de forma curta (máx 3 parágrafos). "
+    "NUNCA produza conteúdo adulto, discurso de ódio, assédio ou ilegal. "
+    "Se tentarem provocar esse conteúdo, recuse com bom humor e mude de assunto.\n\n"
+)
+
+# Histórico de conversa por usuário: {user_id: [(role, text), ...]}
+_conversation_history: dict[int, list[tuple[str, str]]] = {}
+
 if gemini_enabled:
     genai.configure(api_key=GEMINI_API_KEY)
-    _ai_model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
-        system_instruction=(
-            "Você é o ONBot, assistente oficial do clã 'Clan ON' no Discord. "
-            "Sua personalidade: descontraído, animado, gosta de games e de conversar. "
-            "Você é um bot — nunca finja ser humano nem diga que é humano. "
-            "Se alguém perguntar sua idade, diga que bots não têm idade mas que foi criado recentemente. "
-            "Faça perguntas de volta para manter a conversa fluindo — pergunte como a pessoa tá, "
-            "qual jogo ela joga, como tá o clã, etc. "
-            "Responda sempre em português brasileiro, de forma curta e natural (máx 3 parágrafos). "
-            "NUNCA produza conteúdo que viole os Termos de Serviço do Discord: "
-            "sem conteúdo adulto, sem discurso de ódio, sem assédio, sem informações ilegais, "
-            "sem incentivo a violência. Se o usuário tentar provocar esse tipo de conteúdo, "
-            "recuse com bom humor e mude de assunto."
-        ),
-    )
-    # Histórico de conversa por usuário: {user_id: [{"role": ..., "parts": [...]}]}
-    _conversation_history: dict[int, list[dict]] = {}
+    _ai_model = genai.GenerativeModel(model_name="gemini-1.5-flash")
     print("[OK] IA (Gemini) ativada para conversas por DM.")
 else:
     print("[AVISO] GEMINI_API_KEY não definida — respostas por DM usarão modo básico.")
@@ -121,8 +118,8 @@ async def _generate_dm_response(user: discord.User, user_message: str) -> str:
 
     history = _conversation_history.setdefault(user.id, [])
 
-    # Adiciona mensagem do usuário ao histórico (formato correto do Gemini)
-    history.append({"role": "user", "parts": [{"text": user_message}]})
+    # Adiciona mensagem do usuário ao histórico (role, text)
+    history.append(("user", user_message))
 
     # Mantém histórico limitado (últimas MAX_HISTORY mensagens)
     if len(history) > MAX_HISTORY:
@@ -130,21 +127,28 @@ async def _generate_dm_response(user: discord.User, user_message: str) -> str:
 
     try:
         def _call_gemini() -> str:
-            chat = _ai_model.start_chat(history=history[:-1])
-            return chat.send_message(user_message).text.strip()
+            # Monta o prompt completo como texto simples
+            prompt = SYSTEM_PROMPT + "Conversa até agora:\n"
+            for role, text in history[:-1]:
+                label = "Usuário" if role == "user" else "ONBot"
+                prompt += f"{label}: {text}\n"
+            prompt += f"Usuário: {user_message}\nONBot:"
+
+            response = _ai_model.generate_content(prompt)
+            return response.text.strip()
 
         reply = await asyncio.to_thread(_call_gemini)
     except Exception as e:
         import traceback
-        print(f"[ERRO IA] {e}")
+        print(f"[ERRO IA] {type(e).__name__}: {e}")
         traceback.print_exc()
         reply = (
             "Ih, deu um problema aqui do meu lado! 😅 "
             "Tenta de novo em alguns instantes."
         )
 
-    # Adiciona resposta do bot ao histórico (formato correto do Gemini)
-    history.append({"role": "model", "parts": [{"text": reply}]})
+    # Adiciona resposta do bot ao histórico
+    history.append(("model", reply))
     print(f"[DM] {user.name}: {user_message[:50]} → resposta gerada")
     return reply
 
