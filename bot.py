@@ -1,4 +1,5 @@
 import os
+import asyncio
 import discord
 from discord.ext import commands
 import google.generativeai as genai
@@ -128,9 +129,11 @@ async def _generate_dm_response(user: discord.User, user_message: str) -> str:
         history[:] = history[-MAX_HISTORY:]
 
     try:
-        chat = _ai_model.start_chat(history=history[:-1])
-        response = await chat.send_message_async(user_message)
-        reply = response.text.strip()
+        def _call_gemini() -> str:
+            chat = _ai_model.start_chat(history=history[:-1])
+            return chat.send_message(user_message).text.strip()
+
+        reply = await asyncio.to_thread(_call_gemini)
     except Exception as e:
         print(f"[ERRO IA] {e}")
         reply = (
