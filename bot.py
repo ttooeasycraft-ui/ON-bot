@@ -1,8 +1,10 @@
 import os
 import asyncio
+import json
+import urllib.request
+import urllib.error
 import discord
 from discord.ext import commands
-import google.generativeai as genai
 
 # ──────────────────────────────────────────────
 # Configurações do servidor
@@ -32,14 +34,18 @@ MONITORED_ROLES: dict[int, str] = {
     1500325078754132080: "MINERADOR",
 }
 
-# Máximo de mensagens por usuário guardadas no histórico de conversa
+# Máximo de mensagens por usuário guardadas no histórico
 MAX_HISTORY = 20
 
 # ──────────────────────────────────────────────
-# Configuração da IA (Gemini)
+# Configuração da IA (Gemini via HTTP direto)
 # ──────────────────────────────────────────────
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 gemini_enabled = bool(GEMINI_API_KEY)
+GEMINI_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    f"gemini-flash-lite-latest:generateContent?key={GEMINI_API_KEY}"
+)
 
 SYSTEM_PROMPT = (
     "Você é o ONBot, assistente oficial do clã 'Clan ON' no Discord. "
@@ -49,18 +55,16 @@ SYSTEM_PROMPT = (
     "Faça perguntas de volta para manter a conversa fluindo. "
     "Responda SEMPRE em português brasileiro, de forma curta (máx 3 parágrafos). "
     "NUNCA produza conteúdo adulto, discurso de ódio, assédio ou ilegal. "
-    "Se tentarem provocar esse conteúdo, recuse com bom humor e mude de assunto.\n\n"
+    "Se tentarem provocar esse conteúdo, recuse com bom humor e mude de assunto."
 )
 
-# Histórico de conversa por usuário: {user_id: [(role, text), ...]}
+# Histórico: {user_id: [(role, text), ...]}
 _conversation_history: dict[int, list[tuple[str, str]]] = {}
 
 if gemini_enabled:
-    genai.configure(api_key=GEMINI_API_KEY)
-    _ai_model = genai.GenerativeModel(model_name="gemini-1.5-flash")
-    print("[OK] IA (Gemini) ativada para conversas por DM.")
+    print("[OK] IA (Gemini 2.0 Flash) ativada para conversas por DM.")
 else:
-    print("[AVISO] GEMINI_API_KEY não definida — respostas por DM usarão modo básico.")
+    print("[AVISO] GEMINI_API_KEY não definida — DM usará modo básico.")
 
 # ──────────────────────────────────────────────
 # Intents
@@ -74,7 +78,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 
 # ──────────────────────────────────────────────
-# Eventos de ciclo de vida
+# Ciclo de vida
 # ──────────────────────────────────────────────
 @bot.event
 async def on_ready() -> None:
@@ -82,22 +86,17 @@ async def on_ready() -> None:
     if guild:
         print(f"[OK] Bot conectado como {bot.user} no servidor: {guild.name}")
     else:
-        print(
-            f"[AVISO] Bot conectado como {bot.user}, "
-            f"mas o servidor {GUILD_ID} não foi encontrado."
-        )
+        print(f"[AVISO] Servidor {GUILD_ID} não encontrado.")
 
 
 # ──────────────────────────────────────────────
-# Chat por DM com IA
+# Chat por DM
 # ──────────────────────────────────────────────
 @bot.event
 async def on_message(message: discord.Message) -> None:
-    # Ignora mensagens do próprio bot
     if message.author.bot:
         return
 
-    # Só age em DMs (mensagem direta, não em servidores)
     if not isinstance(message.channel, discord.DMChannel):
         await bot.process_commands(message)
         return
@@ -106,126 +105,109 @@ async def on_message(message: discord.Message) -> None:
         response = await _generate_dm_response(message.author, message.content)
 
     await message.channel.send(response)
-
-    # Permite que comandos ! também funcionem em DMs
     await bot.process_commands(message)
 
 
+def _gemini_call(prompt: str) -> str:
+    """Chama a API do Gemini via HTTP puro — sem bibliotecas externas."""
+    payload = json.dumps({
+        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "contents": [{"parts": [{"text": prompt}]}],
+    }).encode()
+
+    req = urllib.request.Request(GEMINI_URL, data=payload, method="POST")
+    req.add_header("Content-Type", "application/json")
+
+    with urllib.request.urlopen(req, timeout=20) as r:
+        result = json.loads(r.read())
+
+    return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+
 async def _generate_dm_response(user: discord.User, user_message: str) -> str:
-    """Gera resposta para DM usando Gemini ou modo básico."""
     if not gemini_enabled:
         return _basic_response(user_message)
 
     history = _conversation_history.setdefault(user.id, [])
-
-    # Adiciona mensagem do usuário ao histórico (role, text)
     history.append(("user", user_message))
 
-    # Mantém histórico limitado (últimas MAX_HISTORY mensagens)
     if len(history) > MAX_HISTORY:
         history[:] = history[-MAX_HISTORY:]
 
+    # Monta prompt com histórico da conversa
+    lines = []
+    for role, text in history[:-1]:
+        label = "Usuário" if role == "user" else "ONBot"
+        lines.append(f"{label}: {text}")
+    lines.append(f"Usuário: {user_message}")
+    lines.append("ONBot:")
+    prompt = "\n".join(lines)
+
     try:
-        def _call_gemini() -> str:
-            # Monta o prompt completo como texto simples
-            prompt = SYSTEM_PROMPT + "Conversa até agora:\n"
-            for role, text in history[:-1]:
-                label = "Usuário" if role == "user" else "ONBot"
-                prompt += f"{label}: {text}\n"
-            prompt += f"Usuário: {user_message}\nONBot:"
-
-            response = _ai_model.generate_content(prompt)
-            return response.text.strip()
-
-        reply = await asyncio.to_thread(_call_gemini)
+        reply = await asyncio.to_thread(_gemini_call, prompt)
     except Exception as e:
-        import traceback
         print(f"[ERRO IA] {type(e).__name__}: {e}")
-        traceback.print_exc()
-        reply = (
-            "Ih, deu um problema aqui do meu lado! 😅 "
-            "Tenta de novo em alguns instantes."
-        )
+        reply = "Ih, deu um problema aqui do meu lado! 😅 Tenta de novo em alguns instantes."
 
-    # Adiciona resposta do bot ao histórico
     history.append(("model", reply))
-    print(f"[DM] {user.name}: {user_message[:50]} → resposta gerada")
+    print(f"[DM] {user.name}: {user_message[:50]}")
     return reply
 
 
 def _basic_response(text: str) -> str:
-    """Respostas simples para quando a IA não está configurada."""
-    text_lower = text.lower()
-    if any(w in text_lower for w in ["oi", "olá", "ola", "hey", "eae", "salve"]):
-        return (
-            "Oi! 👋 Sou o ONBot, bot oficial do Clan ON! "
-            "Como posso te ajudar hoje?"
-        )
-    if any(w in text_lower for w in ["tudo", "como vai", "como tá", "como ta"]):
+    t = text.lower()
+    if any(w in t for w in ["oi", "olá", "ola", "hey", "eae", "salve"]):
+        return "Oi! 👋 Sou o ONBot, bot oficial do Clan ON! Como posso te ajudar?"
+    if any(w in t for w in ["tudo", "como vai", "como tá", "como ta"]):
         return "Tudo bem por aqui, rodando 24/7! 😄 E você, como tá?"
-    if any(w in text_lower for w in ["obrigado", "obrigada", "vlw", "valeu"]):
+    if any(w in t for w in ["obrigado", "obrigada", "vlw", "valeu"]):
         return "Disponha! 😊 Qualquer coisa é só chamar!"
-    if any(w in text_lower for w in ["tchau", "bye", "até", "falou"]):
-        return "Até mais! 👋 Qualquer coisa é só chamar!"
-    return (
-        "Recebi sua mensagem! 🤖 Para ter conversas completas comigo, "
-        "peça para o admin configurar a GEMINI_API_KEY."
-    )
+    if any(w in t for w in ["tchau", "bye", "até", "falou"]):
+        return "Até mais! 👋"
+    return "Recebi sua mensagem! 🤖 Configure a GEMINI_API_KEY para conversas com IA."
 
 
 # ──────────────────────────────────────────────
-# Detecção de promoção e rebaixamento de cargos
+# Promoção e rebaixamento de cargos
 # ──────────────────────────────────────────────
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member) -> None:
-    # Ignora eventos de servidores diferentes do configurado
     if after.guild.id != GUILD_ID:
         return
 
     before_role_ids = {r.id for r in before.roles}
     after_role_ids = {r.id for r in after.roles}
 
-    newly_added_ids = after_role_ids - before_role_ids
-    newly_removed_ids = before_role_ids - after_role_ids
+    for role_id in after_role_ids - before_role_ids:
+        if role_id in MONITORED_ROLES:
+            await _send_promotion_message(after, MONITORED_ROLES[role_id])
 
-    for role_id in newly_added_ids:
-        if role_id not in MONITORED_ROLES:
-            continue
-        await _send_promotion_message(after, MONITORED_ROLES[role_id])
-
-    for role_id in newly_removed_ids:
-        if role_id not in MONITORED_ROLES:
-            continue
-        await _send_demotion_message(after, MONITORED_ROLES[role_id])
+    for role_id in before_role_ids - after_role_ids:
+        if role_id in MONITORED_ROLES:
+            await _send_demotion_message(after, MONITORED_ROLES[role_id])
 
 
 async def _send_promotion_message(member: discord.Member, role_name: str) -> None:
-    """Envia a mensagem de promoção no canal de avisos."""
     channel = member.guild.get_channel(ANNOUNCEMENTS_CHANNEL_ID)
     if channel is None:
-        print(f"[ERRO] Canal de avisos {ANNOUNCEMENTS_CHANNEL_ID} não encontrado.")
+        print(f"[ERRO] Canal {ANNOUNCEMENTS_CHANNEL_ID} não encontrado.")
         return
-
-    message = (
+    await channel.send(
         f"🚀 Promoção Detectada! O membro {member.mention} agora possui o cargo "
         f"**{role_name}**! Parabéns pela conquista! 🎊"
     )
-    await channel.send(message)
     print(f"[PROMOÇÃO] {member.display_name} → {role_name}")
 
 
 async def _send_demotion_message(member: discord.Member, role_name: str) -> None:
-    """Envia a mensagem de rebaixamento no canal de avisos."""
     channel = member.guild.get_channel(ANNOUNCEMENTS_CHANNEL_ID)
     if channel is None:
-        print(f"[ERRO] Canal de avisos {ANNOUNCEMENTS_CHANNEL_ID} não encontrado.")
+        print(f"[ERRO] Canal {ANNOUNCEMENTS_CHANNEL_ID} não encontrado.")
         return
-
-    message = (
+    await channel.send(
         f"📉 Rebaixamento Detectado! O membro {member.mention} perdeu o cargo "
         f"**{role_name}**! 😔"
     )
-    await channel.send(message)
     print(f"[REBAIXAMENTO] {member.display_name} ← {role_name}")
 
 
