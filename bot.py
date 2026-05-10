@@ -121,8 +121,8 @@ async def _generate_dm_response(user: discord.User, user_message: str) -> str:
 
     history = _conversation_history.setdefault(user.id, [])
 
-    # Adiciona mensagem do usuário ao histórico
-    history.append({"role": "user", "parts": [user_message]})
+    # Adiciona mensagem do usuário ao histórico (formato correto do Gemini)
+    history.append({"role": "user", "parts": [{"text": user_message}]})
 
     # Mantém histórico limitado (últimas MAX_HISTORY mensagens)
     if len(history) > MAX_HISTORY:
@@ -135,14 +135,16 @@ async def _generate_dm_response(user: discord.User, user_message: str) -> str:
 
         reply = await asyncio.to_thread(_call_gemini)
     except Exception as e:
+        import traceback
         print(f"[ERRO IA] {e}")
+        traceback.print_exc()
         reply = (
             "Ih, deu um problema aqui do meu lado! 😅 "
             "Tenta de novo em alguns instantes."
         )
 
-    # Adiciona resposta do bot ao histórico
-    history.append({"role": "model", "parts": [reply]})
+    # Adiciona resposta do bot ao histórico (formato correto do Gemini)
+    history.append({"role": "model", "parts": [{"text": reply}]})
     print(f"[DM] {user.name}: {user_message[:50]} → resposta gerada")
     return reply
 
