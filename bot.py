@@ -150,18 +150,34 @@ async def on_ready() -> None:
 
 
 # ──────────────────────────────────────────────
-# Verificação de cargo do clã
+# Dados reais do membro no servidor
 # ──────────────────────────────────────────────
-def _is_clan_member(user_id: int) -> bool:
-    """Verifica se o usuário tem algum cargo do clã no servidor."""
+def _get_member_context(user_id: int) -> dict:
+    """
+    Retorna dados reais do membro buscados diretamente do Discord.
+    Nunca inventa — se não encontrar, retorna vazio.
+    """
     guild = bot.get_guild(GUILD_ID)
     if guild is None:
-        return False
+        return {"in_server": False, "is_clan_member": False, "roles": [], "nick": None}
+
     member = guild.get_member(user_id)
     if member is None:
-        return False
-    member_role_ids = {r.id for r in member.roles}
-    return bool(member_role_ids & CLAN_ROLE_IDS)
+        return {"in_server": False, "is_clan_member": False, "roles": [], "nick": None}
+
+    # Cargos reais que pertencem ao clã (exclui @everyone)
+    clan_roles = [
+        MONITORED_ROLES[r.id]
+        for r in member.roles
+        if r.id in MONITORED_ROLES
+    ]
+
+    return {
+        "in_server": True,
+        "is_clan_member": bool(clan_roles),
+        "roles": clan_roles,
+        "nick": member.nick or member.display_name,
+    }
 
 
 # ──────────────────────────────────────────────
@@ -203,16 +219,53 @@ async def _generate_dm_response(user: discord.User, user_message: str) -> str:
     if not gemini_enabled:
         return _basic_response(user_message)
 
-    # Verifica se é membro do clã
-    is_member = _is_clan_member(user.id)
-    membership_prompt = SYSTEM_PROMPT_MEMBER if is_member else SYSTEM_PROMPT_OUTSIDER
-    system_prompt = SYSTEM_PROMPT_BASE + membership_prompt
+    # Busca dados REAIS do membro no servidor Discord
+    ctx = _get_member_context(user.id)
+
+    # Monta bloco de contexto real para a IA — sem espaço para invenção
+    if ctx["in_server"]:
+        if ctx["roles"]:
+            roles_str = ", ".join(ctx["roles"])
+            member_context = (
+                f"\n\n=== DADOS REAIS DO USUÁRIO (buscados do Discord agora) ===\n"
+                f"Nome no servidor: {ctx['nick']}\n"
+                f"Cargos do clã: {roles_str}\n"
+                f"Status: MEMBRO VERIFICADO DO CLÃ\n"
+                f"=========================================================\n"
+            )
+            membership_prompt = SYSTEM_PROMPT_MEMBER
+        else:
+            member_context = (
+                f"\n\n=== DADOS REAIS DO USUÁRIO (buscados do Discord agora) ===\n"
+                f"Nome no servidor: {ctx['nick']}\n"
+                f"Cargos do clã: nenhum\n"
+                f"Status: ESTÁ NO SERVIDOR MAS NÃO É MEMBRO DO CLÃ\n"
+                f"=========================================================\n"
+            )
+            membership_prompt = SYSTEM_PROMPT_OUTSIDER
+    else:
+        member_context = (
+            f"\n\n=== DADOS REAIS DO USUÁRIO (buscados do Discord agora) ===\n"
+            f"Nome Discord: {user.name}\n"
+            f"Status: NÃO ESTÁ NO SERVIDOR do clã\n"
+            f"=========================================================\n"
+        )
+        membership_prompt = SYSTEM_PROMPT_OUTSIDER
+
+    no_hallucination = (
+        "\n\nREGRA CRÍTICA ANTI-INVENÇÃO:\n"
+        "NUNCA invente nomes de canais, membros, cargos ou informações que não estão "
+        "neste prompt. Se não souber algo, diga 'Não tenho essa informação agora.' "
+        "Os dados reais do usuário estão na seção acima — use APENAS eles ao falar "
+        "sobre cargos, apelido ou status do usuário. NUNCA adivinhe."
+    )
+
+    system_prompt = SYSTEM_PROMPT_BASE + membership_prompt + member_context + no_hallucination
 
     # Carrega histórico persistente
     history = _load_history(user.id)
     history.append(("user", user_message))
 
-    # Mantém histórico dentro do limite
     if len(history) > MAX_HISTORY:
         history = history[-MAX_HISTORY:]
 
@@ -232,12 +285,11 @@ async def _generate_dm_response(user: discord.User, user_message: str) -> str:
         reply = "Ih, deu um problema aqui do meu lado! 😅 Tenta de novo em instantes."
 
     history.append(("model", reply))
-
-    # Salva histórico persistente
     await asyncio.to_thread(_save_history, user.id, history)
 
-    status = "membro" if is_member else "visitante"
-    print(f"[DM/{status}] {user.name}: {user_message[:50]}")
+    status = "membro" if ctx["is_clan_member"] else "visitante"
+    roles_log = ", ".join(ctx["roles"]) if ctx["roles"] else "nenhum"
+    print(f"[DM/{status}] {user.name} | cargos: {roles_log} | msg: {user_message[:40]}")
     return reply
 
 
