@@ -5,12 +5,16 @@ import urllib.request
 import urllib.error
 import discord
 from discord.ext import commands
+from aiohttp import web
 
 # ──────────────────────────────────────────────
 # Configurações do servidor
 # ──────────────────────────────────────────────
 GUILD_ID = 1500320169891856425
 ANNOUNCEMENTS_CHANNEL_ID = 1500348773786849290
+APPLICATIONS_CHANNEL_ID = 1503420729146736731
+
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 
 # Cargos monitorados: {role_id: nome_exibido}
 MONITORED_ROLES: dict[int, str] = {
@@ -352,13 +356,72 @@ async def _send_demotion_message(member: discord.Member, role_name: str) -> None
 
 
 # ──────────────────────────────────────────────
+# Webhook — recebe inscrições do Google Forms
+# ──────────────────────────────────────────────
+async def handle_forms_webhook(request: web.Request) -> web.Response:
+    try:
+        data = await request.json()
+    except Exception:
+        return web.Response(status=400, text="JSON inválido")
+
+    # Verifica segredo se configurado
+    if WEBHOOK_SECRET and data.get("secret") != WEBHOOK_SECRET:
+        print("[WEBHOOK] Requisição rejeitada — segredo inválido.")
+        return web.Response(status=401, text="Não autorizado")
+
+    channel = bot.get_channel(APPLICATIONS_CHANNEL_ID)
+    if channel is None:
+        print(f"[ERRO] Canal de inscrições {APPLICATIONS_CHANNEL_ID} não encontrado.")
+        return web.Response(status=503, text="Canal não encontrado")
+
+    nick   = data.get("nick", "—")
+    horas  = data.get("horas", "—")
+    regras = data.get("regras", "—")
+    mundo  = data.get("mundo", "—")
+    motivo = data.get("motivo", "—")
+
+    embed = discord.Embed(
+        title="📋 Nova Inscrição — Clã ONLINE",
+        color=0x2ecc71,
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(name="🎮 Nick no servidor",              value=nick,   inline=False)
+    embed.add_field(name="⏱️ Horas por dia",                value=horas,  inline=True)
+    embed.add_field(name="✅ Compromisso com as regras",    value=regras, inline=True)
+    embed.add_field(name="🌍 Mundo favorito",               value=mundo,  inline=True)
+    embed.add_field(name="💬 Por que quer entrar no ONLINE", value=motivo, inline=False)
+    embed.set_footer(text="Clã ONLINE • NerdZone")
+
+    await channel.send(embed=embed)
+    print(f"[INSCRIÇÃO] Nova inscrição de '{nick}' postada no canal.")
+    return web.Response(status=200, text="OK")
+
+
+# ──────────────────────────────────────────────
 # Ponto de entrada
 # ──────────────────────────────────────────────
-if __name__ == "__main__":
+async def _main() -> None:
     token = os.getenv("TOKEN")
     if not token:
         raise RuntimeError(
             "Variável de ambiente TOKEN não definida. "
             "Adicione o token do bot nas configurações de Secrets."
         )
-    bot.run(token)
+
+    port = int(os.getenv("PORT", "8080"))
+
+    app = web.Application()
+    app.router.add_post("/webhook/forms", handle_forms_webhook)
+    app.router.add_get("/health", lambda r: web.Response(text="OK"))
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"[OK] Servidor webhook rodando na porta {port} → POST /webhook/forms")
+
+    await bot.start(token)
+
+
+if __name__ == "__main__":
+    asyncio.run(_main())
