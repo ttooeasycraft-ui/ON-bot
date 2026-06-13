@@ -1,6 +1,5 @@
 import os
 import asyncio
-import base64
 import json
 import urllib.request
 import urllib.error
@@ -129,95 +128,6 @@ def _save_history(user_id: int, history: list[tuple[str, str]]) -> None:
 
 
 # ──────────────────────────────────────────────
-# Integração NerdWiki — canais do NerdZone
-# ──────────────────────────────────────────────
-NERDZONE_EVENTS_CHANNEL_ID = 1507243013485756558
-NERDZONE_UPDATES_CHANNEL_ID = 1507243113956249641
-NERDZONE_EVENTS_KEYWORD = "CRONOGRAMA DE EVENTOS"
-NERDZONE_UPDATES_KEYWORD = "Atualização Prison"
-
-GITHUB_TOKEN_BOT = os.getenv("GITHUB_TOKEN", "")
-GITHUB_REPO_WIKI = os.getenv("GITHUB_REPO", "ttooeasycraft-ui/NerdWiki")
-
-
-def _github_update_json(filename: str, new_message: dict) -> None:
-    """Adiciona uma mensagem ao JSON no gh-pages via GitHub API."""
-    if not GITHUB_TOKEN_BOT:
-        print("[NERDWIKI] GITHUB_TOKEN não configurado — mensagem não salva.")
-        return
-
-    url = f"https://api.github.com/repos/{GITHUB_REPO_WIKI}/contents/data/{filename}"
-    auth_headers = {
-        "Authorization": f"token {GITHUB_TOKEN_BOT}",
-        "Content-Type": "application/json",
-        "User-Agent": "ONBot/1.0",
-    }
-
-    # Busca arquivo atual para obter o SHA e conteúdo existente
-    req = urllib.request.Request(url + "?ref=gh-pages", headers=auth_headers)
-    sha = None
-    current_data: dict = {"last_updated": None, "messages": []}
-    try:
-        with urllib.request.urlopen(req, timeout=10) as r:
-            existing = json.loads(r.read())
-        sha = existing.get("sha")
-        content_b64 = existing.get("content", "").replace("\n", "")
-        if content_b64:
-            current_data = json.loads(base64.b64decode(content_b64).decode("utf-8"))
-    except Exception as e:
-        print(f"[NERDWIKI] Arquivo {filename} não encontrado no gh-pages, criando novo. ({e})")
-
-    # Adiciona nova mensagem no início (mais recente primeiro) e limita a 50
-    messages = current_data.get("messages", [])
-    messages.insert(0, new_message)
-    messages = messages[:50]
-
-    updated = {
-        "last_updated": new_message["timestamp"],
-        "messages": messages,
-    }
-
-    encoded = base64.b64encode(
-        json.dumps(updated, ensure_ascii=False, indent=2).encode("utf-8")
-    ).decode()
-
-    payload_dict: dict = {
-        "message": f"bot: update {filename}",
-        "content": encoded,
-        "branch": "gh-pages",
-    }
-    if sha:
-        payload_dict["sha"] = sha
-
-    payload = json.dumps(payload_dict).encode()
-    req = urllib.request.Request(url, data=payload, method="PUT", headers=auth_headers)
-    try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            r.read()
-        print(f"[NERDWIKI] {filename} atualizado com sucesso no GitHub Pages.")
-    except Exception as e:
-        print(f"[NERDWIKI ERRO] Falha ao atualizar {filename}: {e}")
-
-
-async def _handle_nerdzone_message(message: discord.Message, msg_type: str) -> None:
-    """Captura mensagem do NerdZone e salva no NerdWiki via GitHub API."""
-    data = {
-        "id": str(message.id),
-        "content": message.content,
-        "author": str(message.author.display_name),
-        "timestamp": message.created_at.isoformat(),
-        "channel": getattr(message.channel, "name", "canal"),
-        "jump_url": message.jump_url,
-    }
-    filename = "events.json" if msg_type == "events" else "updates.json"
-    await asyncio.to_thread(_github_update_json, filename, data)
-    print(
-        f"[NERDWIKI] Mensagem {msg_type} capturada de {message.author.display_name}: "
-        f"{message.content[:60]}..."
-    )
-
-
-# ──────────────────────────────────────────────
 # Intents
 # ──────────────────────────────────────────────
 intents = discord.Intents.default()
@@ -242,10 +152,6 @@ async def on_ready() -> None:
         print("[OK] IA (Gemini) ativada para conversas por DM.")
     else:
         print("[AVISO] GEMINI_API_KEY não definida — DM usará modo básico.")
-    if GITHUB_TOKEN_BOT:
-        print(f"[OK] NerdWiki integração ativa → repo: {GITHUB_REPO_WIKI}")
-    else:
-        print("[AVISO] GITHUB_TOKEN não definida — integração NerdWiki desativada.")
 
 
 # ──────────────────────────────────────────────
@@ -280,25 +186,12 @@ def _get_member_context(user_id: int) -> dict:
 
 
 # ──────────────────────────────────────────────
-# Chat por DM + monitoramento NerdZone
+# Chat por DM
 # ──────────────────────────────────────────────
 @bot.event
 async def on_message(message: discord.Message) -> None:
     if message.author.bot:
         return
-
-    # ── Monitoramento NerdZone → NerdWiki ───────────────────────────────────
-    if (
-        message.channel.id == NERDZONE_EVENTS_CHANNEL_ID
-        and NERDZONE_EVENTS_KEYWORD in message.content
-    ):
-        await _handle_nerdzone_message(message, "events")
-    elif (
-        message.channel.id == NERDZONE_UPDATES_CHANNEL_ID
-        and NERDZONE_UPDATES_KEYWORD in message.content
-    ):
-        await _handle_nerdzone_message(message, "updates")
-    # ────────────────────────────────────────────────────────────────────────
 
     if not isinstance(message.channel, discord.DMChannel):
         await bot.process_commands(message)
@@ -463,6 +356,43 @@ async def _send_demotion_message(member: discord.Member, role_name: str) -> None
 
 
 # ──────────────────────────────────────────────
+# Comando !aviso — envia aviso de inatividade
+# ──────────────────────────────────────────────
+AVISO_CHANNEL_ID = 1500348383842537576
+
+AVISO_TEXTO = (
+    "📢 ONLINE | AVISO IMPORTANTE\n\n"
+    "👀 Galera, estamos notando que a ÚNICA pessoa aparecendo ONLINE no servidor é o próprio dono!\n\n"
+    "Todo mundo sumiu do nada e a gente precisa saber o que tá acontecendo! 🤔\n\n"
+    "❓ Você saiu do servidor?\n"
+    "❓ Ficou offline de propósito?\n"
+    "❓ Tá com algum problema?\n\n"
+    "➡️ Seja qual for o motivo, vai lá no <#1500349217523240970> e explica a situação!\n\n"
+    "⚠️ Precisamos de todo mundo ATIVO para manter o servidor vivo!\n\n"
+    "— Staff ONLINE 🔔\n\n"
+    "||@everyone||"
+)
+
+
+@bot.command(name="aviso")
+@commands.has_permissions(administrator=True)
+async def cmd_aviso(ctx: commands.Context) -> None:
+    channel = bot.get_channel(AVISO_CHANNEL_ID)
+    if channel is None:
+        await ctx.reply("❌ Canal não encontrado.", mention_author=False)
+        return
+    await channel.send(AVISO_TEXTO)
+    await ctx.reply("✅ Aviso enviado!", mention_author=False)
+    print(f"[AVISO] Enviado por {ctx.author} no canal {AVISO_CHANNEL_ID}")
+
+
+@cmd_aviso.error
+async def cmd_aviso_error(ctx: commands.Context, error: Exception) -> None:
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.reply("❌ Só admins podem usar esse comando.", mention_author=False)
+
+
+# ──────────────────────────────────────────────
 # Webhook — recebe inscrições do Google Forms
 # ──────────────────────────────────────────────
 async def handle_forms_webhook(request: web.Request) -> web.Response:
@@ -532,4 +462,3 @@ async def _main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(_main())
-
