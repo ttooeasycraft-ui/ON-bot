@@ -608,21 +608,21 @@ async def handle_forms_webhook(request: web.Request) -> web.Response:
     nick       = data.get("nick", "—")
     horas      = data.get("horas", "—")
     regras     = data.get("regras", "—")
-    mundo      = data.get("mundo", "—")
-    motivo     = data.get("motivo", "—")
+    trabalho   = data.get("trabalho", "—")
     discord_id = str(data.get("discord_id", "")).strip()
+    motivo     = data.get("motivo", "—")
 
     embed = discord.Embed(
         title="📋 Nova Inscrição — Clã ONLINE",
         color=0x2ecc71,
         timestamp=discord.utils.utcnow(),
     )
-    embed.add_field(name="🎮 Nick no servidor",              value=nick,        inline=False)
+    embed.add_field(name="🎮 Nick no servidor",              value=nick,              inline=False)
     embed.add_field(name="🔑 ID do Discord",                 value=discord_id or "—", inline=True)
-    embed.add_field(name="⏱️ Horas por dia",                 value=horas,       inline=True)
-    embed.add_field(name="✅ Compromisso com as regras",     value=regras,      inline=True)
-    embed.add_field(name="🌍 Mundo favorito",                value=mundo,       inline=True)
-    embed.add_field(name="💬 Por que quer entrar no ONLINE", value=motivo,      inline=False)
+    embed.add_field(name="⏱️ Horas por dia",                 value=horas,             inline=True)
+    embed.add_field(name="✅ Compromisso com as regras",     value=regras,            inline=True)
+    embed.add_field(name="🕐 Horário de trabalho",           value=trabalho,          inline=True)
+    embed.add_field(name="💬 Por que quer entrar no ONLINE", value=motivo,            inline=False)
     embed.set_footer(text="Clã ONLINE • NerdZone")
 
     await channel.send(embed=embed)
