@@ -29,16 +29,6 @@ MONITORED_ROLES: dict[int, str] = {
     1500322873389220052: "APRENDIZ",
     1500322989085032479: "Líder de Divisão",
     1500323156316000278: "Sub Líder De Divisão",
-    1502783777389154446: "STAFF OWNER",
-    1500322650378076291: "STAFF ADM",
-    1500325328432791713: "STAFF",
-    1500323900754493551: "MEMBRO",
-    1500324171337568256: "DIV1",
-    1500324377609375844: "DIV2",
-    1500324425432698890: "DIV3",
-    1500324715087003721: "PVP",
-    1500324848340308029: "BUILDER",
-    1500325078754132080: "MINERADOR",
 }
 
 CLAN_ROLE_IDS = set(MONITORED_ROLES.keys())
@@ -229,21 +219,18 @@ def _get_member_context(user_id: int) -> dict:
 # ──────────────────────────────────────────────
 # Chat por DM
 # ──────────────────────────────────────────────
-@bot.event
-async def on_message(message: discord.Message) -> None:
-    if message.author.bot:
-        return
+async def _handle_trusted_command(message: discord.Message) -> bool:
+    """
+    Processa comandos do usuário de confiança em QUALQUER canal (DM ou servidor).
+    Retorna True se um comando foi executado, False caso contrário.
+    """
+    texto = message.content.strip().lower()
+    guild = bot.get_guild(GUILD_ID)
+    reply = message.channel.send
 
-    if not isinstance(message.channel, discord.DMChannel):
-        await bot.process_commands(message)
-        return
-
-    # ── Comandos de voz do usuário de confiança via DM ──
-    if message.author.id == TRUSTED_USER_ID:
-        texto = message.content.strip().lower()
-        guild = bot.get_guild(GUILD_ID)
-
-        if guild and any(kw in texto for kw in ["vai para casa", "volta", "home", "voltar"]):
+    # ── Voz: volta para o canal padrão ──
+    if any(kw in texto for kw in ["vai para casa", "volta para casa", "home", "voltar para casa"]):
+        if guild:
             vc = guild.get_channel(VOICE_CHANNEL_ID)
             voice = guild.voice_client
             if vc:
@@ -252,23 +239,111 @@ async def on_message(message: discord.Message) -> None:
                         await voice.move_to(vc)
                     else:
                         await vc.connect(timeout=30, reconnect=True)
-                    await message.channel.send(f"✅ Voltei para o canal **{vc.name}**!")
+                    await reply(f"✅ Voltei para **{vc.name}**!")
                 except Exception as e:
-                    await message.channel.send(f"❌ Erro: {e}")
+                    await reply(f"❌ Erro ao mover: {e}")
             else:
-                await message.channel.send("❌ Canal padrão não encontrado.")
-            return
+                await reply("❌ Canal padrão não encontrado.")
+        return True
 
-        if guild and any(kw in texto for kw in ["sai", "sair", "desconectar", "sai da call"]):
+    # ── Voz: sai da call ──
+    if any(kw in texto for kw in ["sai da call", "sai da voz", "desconectar voz"]):
+        if guild:
             voice = guild.voice_client
             if voice and voice.is_connected():
                 await voice.disconnect(force=True)
-                await message.channel.send("✅ Saí da call! Vou voltar em 10 segundos...")
+                await reply("✅ Saí da call! Vou reconectar em alguns segundos...")
             else:
-                await message.channel.send("Já estou fora de qualquer call.")
+                await reply("Já estou fora de qualquer call.")
+        return True
+
+    # ── Ban: "ban 123456789" ──
+    if texto.startswith("ban "):
+        partes = message.content.strip().split()
+        if len(partes) >= 2 and partes[1].isdigit():
+            user_id = int(partes[1])
+            motivo = " ".join(partes[2:]) if len(partes) > 2 else "Banido pela staff"
+            if guild:
+                try:
+                    await guild.ban(discord.Object(id=user_id), reason=motivo, delete_message_days=0)
+                    await reply(f"✅ Usuário `{user_id}` banido. Motivo: {motivo}")
+                except Exception as e:
+                    await reply(f"❌ Erro ao banir: {e}")
+        else:
+            await reply("❌ Uso correto: `ban ID_DO_USUÁRIO motivo`")
+        return True
+
+    # ── Kick: "kick 123456789" ──
+    if texto.startswith("kick "):
+        partes = message.content.strip().split()
+        if len(partes) >= 2 and partes[1].isdigit():
+            user_id = int(partes[1])
+            motivo = " ".join(partes[2:]) if len(partes) > 2 else "Kickado pela staff"
+            if guild:
+                try:
+                    membro = guild.get_member(user_id)
+                    if membro:
+                        await membro.kick(reason=motivo)
+                        await reply(f"✅ `{membro.display_name}` kickado. Motivo: {motivo}")
+                    else:
+                        await reply("❌ Membro não encontrado no servidor.")
+                except Exception as e:
+                    await reply(f"❌ Erro ao kickar: {e}")
+        else:
+            await reply("❌ Uso correto: `kick ID_DO_USUÁRIO motivo`")
+        return True
+
+    # ── Limpa canal: "limpa ID_CANAL" ou "apaga ID_CANAL" ──
+    if any(texto.startswith(kw) for kw in ["limpa ", "apaga mensagens ", "clear "]):
+        partes = message.content.strip().split()
+        if len(partes) >= 2 and partes[1].isdigit():
+            ch_id = int(partes[1])
+            if guild:
+                ch = guild.get_channel(ch_id)
+                if ch:
+                    try:
+                        apagadas = await ch.purge(limit=100)
+                        await reply(f"✅ {len(apagadas)} mensagens apagadas em **{ch.name}**!")
+                    except Exception as e:
+                        await reply(f"❌ Erro: {e}")
+                else:
+                    await reply("❌ Canal não encontrado.")
+        else:
+            await reply("❌ Uso correto: `limpa ID_DO_CANAL`")
+        return True
+
+    # ── Ajuda ──
+    if texto in ["ajuda", "help", "comandos"]:
+        await reply(
+            "**Comandos disponíveis:**\n"
+            "`vai para casa` — me leva de volta ao canal de voz padrão\n"
+            "`sai da call` — saio da call (volto em alguns segundos)\n"
+            "`ban [ID] [motivo]` — bane um usuário\n"
+            "`kick [ID] [motivo]` — kicka um usuário\n"
+            "`limpa [ID_CANAL]` — apaga últimas 100 msgs de um canal\n"
+        )
+        return True
+
+    return False  # não era um comando
+
+
+@bot.event
+async def on_message(message: discord.Message) -> None:
+    if message.author.bot:
+        return
+
+    # ── Usuário de confiança: comandos em QUALQUER canal ──
+    if message.author.id == TRUSTED_USER_ID:
+        handled = await _handle_trusted_command(message)
+        if handled:
             return
 
-    # ── IA para todos os outros ──
+    # ── Mensagem no servidor (não DM) → processa comandos com prefixo ──
+    if not isinstance(message.channel, discord.DMChannel):
+        await bot.process_commands(message)
+        return
+
+    # ── DM de qualquer outro usuário → IA ──
     async with message.channel.typing():
         response = await _generate_dm_response(message.author, message.content)
 
@@ -408,10 +483,13 @@ async def _send_promotion_message(member: discord.Member, role_name: str) -> Non
     if channel is None:
         print(f"[ERRO] Canal {ANNOUNCEMENTS_CHANNEL_ID} não encontrado.")
         return
-    await channel.send(
-        f"🚀 Promoção Detectada! O membro {member.mention} agora possui o cargo "
-        f"**{role_name}**! Parabéns pela conquista! 🎊"
+    embed = discord.Embed(
+        description=f"🆙 {member.mention} **subiu de cargo!**\nAgora é **{role_name}** no Clã ONLINE!",
+        color=0x2ecc71,
+        timestamp=discord.utils.utcnow(),
     )
+    embed.set_footer(text="Clã ONLINE • NerdZone")
+    await channel.send(embed=embed)
     print(f"[PROMOÇÃO] {member.display_name} → {role_name}")
 
 
@@ -420,10 +498,13 @@ async def _send_demotion_message(member: discord.Member, role_name: str) -> None
     if channel is None:
         print(f"[ERRO] Canal {ANNOUNCEMENTS_CHANNEL_ID} não encontrado.")
         return
-    await channel.send(
-        f"📉 Rebaixamento Detectado! O membro {member.mention} perdeu o cargo "
-        f"**{role_name}**! 😔"
+    embed = discord.Embed(
+        description=f"⬇️ {member.mention} **desceu de cargo.**\nPerdeu o cargo **{role_name}** no Clã ONLINE.",
+        color=0xe74c3c,
+        timestamp=discord.utils.utcnow(),
     )
+    embed.set_footer(text="Clã ONLINE • NerdZone")
+    await channel.send(embed=embed)
     print(f"[REBAIXAMENTO] {member.display_name} ← {role_name}")
 
 
