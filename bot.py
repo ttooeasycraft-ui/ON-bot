@@ -18,6 +18,37 @@ TRUSTED_USER_ID = 1443669292435509260  # pedroeana_33156 — pode mover o bot
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 
+# ──────────────────────────────────────────────
+# Armazenamento de inscrições do formulário
+# {discord_id: {"nick": str, "registered_at": str ISO}}
+# ──────────────────────────────────────────────
+REGISTRATIONS_FILE = "data/registrations.json"
+form_registrations: dict[str, dict] = {}
+
+
+def _load_registrations() -> None:
+    global form_registrations
+    if os.path.exists(REGISTRATIONS_FILE):
+        try:
+            with open(REGISTRATIONS_FILE, "r", encoding="utf-8") as f:
+                form_registrations = json.load(f)
+            print(f"[OK] {len(form_registrations)} inscrição(ões) carregada(s) do disco.")
+        except Exception as e:
+            print(f"[AVISO] Erro ao carregar inscrições: {e}")
+
+
+def _save_registrations() -> None:
+    os.makedirs(os.path.dirname(REGISTRATIONS_FILE), exist_ok=True)
+    with open(REGISTRATIONS_FILE, "w", encoding="utf-8") as f:
+        json.dump(form_registrations, f, ensure_ascii=False, indent=2)
+
+
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+}
+
 # Cargos monitorados: {role_id: nome_exibido}
 MONITORED_ROLES: dict[int, str] = {
     1500321124267987075: "OWNER",
@@ -574,27 +605,81 @@ async def handle_forms_webhook(request: web.Request) -> web.Response:
         print(f"[ERRO] Canal de inscrições {APPLICATIONS_CHANNEL_ID} não encontrado.")
         return web.Response(status=503, text="Canal não encontrado")
 
-    nick   = data.get("nick", "—")
-    horas  = data.get("horas", "—")
-    regras = data.get("regras", "—")
-    mundo  = data.get("mundo", "—")
-    motivo = data.get("motivo", "—")
+    nick       = data.get("nick", "—")
+    horas      = data.get("horas", "—")
+    regras     = data.get("regras", "—")
+    mundo      = data.get("mundo", "—")
+    motivo     = data.get("motivo", "—")
+    discord_id = str(data.get("discord_id", "")).strip()
 
     embed = discord.Embed(
         title="📋 Nova Inscrição — Clã ONLINE",
         color=0x2ecc71,
         timestamp=discord.utils.utcnow(),
     )
-    embed.add_field(name="🎮 Nick no servidor",              value=nick,   inline=False)
-    embed.add_field(name="⏱️ Horas por dia",                value=horas,  inline=True)
-    embed.add_field(name="✅ Compromisso com as regras",    value=regras, inline=True)
-    embed.add_field(name="🌍 Mundo favorito",               value=mundo,  inline=True)
-    embed.add_field(name="💬 Por que quer entrar no ONLINE", value=motivo, inline=False)
+    embed.add_field(name="🎮 Nick no servidor",              value=nick,        inline=False)
+    embed.add_field(name="🔑 ID do Discord",                 value=discord_id or "—", inline=True)
+    embed.add_field(name="⏱️ Horas por dia",                 value=horas,       inline=True)
+    embed.add_field(name="✅ Compromisso com as regras",     value=regras,      inline=True)
+    embed.add_field(name="🌍 Mundo favorito",                value=mundo,       inline=True)
+    embed.add_field(name="💬 Por que quer entrar no ONLINE", value=motivo,      inline=False)
     embed.set_footer(text="Clã ONLINE • NerdZone")
 
     await channel.send(embed=embed)
-    print(f"[INSCRIÇÃO] Nova inscrição de '{nick}' postada no canal.")
+
+    # Salva o Discord ID para verificação no site
+    if discord_id:
+        form_registrations[discord_id] = {
+            "nick": nick,
+            "registered_at": discord.utils.utcnow().isoformat(),
+        }
+        _save_registrations()
+        print(f"[INSCRIÇÃO] Nova inscrição de '{nick}' (ID: {discord_id}) salva.")
+    else:
+        print(f"[INSCRIÇÃO] Nova inscrição de '{nick}' — sem Discord ID informado.")
+
     return web.Response(status=200, text="OK")
+
+
+# ──────────────────────────────────────────────
+# Endpoint — verifica acesso para o site do clã
+# ──────────────────────────────────────────────
+async def handle_verify(request: web.Request) -> web.Response:
+    """GET /verify/{discord_id} — usado pelo site GitHub Pages para checar acesso."""
+    discord_id = request.match_info.get("discord_id", "").strip()
+
+    if discord_id not in form_registrations:
+        return web.json_response(
+            {"registered": False, "member": False},
+            headers=CORS_HEADERS,
+        )
+
+    reg = form_registrations[discord_id]
+
+    # Verifica se ainda está no servidor
+    guild = bot.get_guild(GUILD_ID)
+    is_member = False
+    if guild:
+        try:
+            member = guild.get_member(int(discord_id))
+            is_member = member is not None
+        except Exception:
+            is_member = False
+
+    return web.json_response(
+        {
+            "registered": True,
+            "member": is_member,
+            "nick": reg.get("nick", ""),
+            "registered_at": reg.get("registered_at", ""),
+        },
+        headers=CORS_HEADERS,
+    )
+
+
+async def handle_verify_options(request: web.Request) -> web.Response:
+    """Preflight CORS para o endpoint /verify."""
+    return web.Response(headers=CORS_HEADERS)
 
 
 # ──────────────────────────────────────────────
@@ -610,15 +695,22 @@ async def _main() -> None:
 
     port = int(os.getenv("PORT", "8080"))
 
+    # Carrega inscrições salvas do disco
+    _load_registrations()
+
     app = web.Application()
     app.router.add_post("/webhook/forms", handle_forms_webhook)
+    app.router.add_get("/verify/{discord_id}", handle_verify)
+    app.router.add_route("OPTIONS", "/verify/{discord_id}", handle_verify_options)
     app.router.add_get("/health", lambda r: web.Response(text="OK"))
 
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    print(f"[OK] Servidor webhook rodando na porta {port} → POST /webhook/forms")
+    print(f"[OK] Servidor webhook rodando na porta {port}")
+    print(f"[OK]   POST /webhook/forms  — recebe inscrições do Google Forms")
+    print(f"[OK]   GET  /verify/{{id}}    — verifica acesso para o site")
 
     await bot.start(token)
 
