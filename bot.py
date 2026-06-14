@@ -146,7 +146,7 @@ async def on_ready() -> None:
         print("[AVISO] GEMINI_API_KEY não definida — DM usará modo básico.")
 
     # Conecta e mantém no canal de voz para sempre
-    bot.loop.create_task(_manter_voice())
+    asyncio.ensure_future(_manter_voice())
 
 
 async def _manter_voice() -> None:
