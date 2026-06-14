@@ -14,6 +14,7 @@ GUILD_ID = 1500320169891856425
 ANNOUNCEMENTS_CHANNEL_ID = 1500348773786849290
 APPLICATIONS_CHANNEL_ID = 1503420729146736731
 VOICE_CHANNEL_ID = 1500353607877394512
+TRUSTED_USER_ID = 1443669292435509260  # pedroeana_33156 — pode mover o bot
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 
@@ -159,7 +160,12 @@ async def on_ready() -> None:
 
 
 async def _manter_voice() -> None:
-    """Entra no canal de voz e reconecta automaticamente se cair."""
+    """
+    Mantém o bot em algum canal de voz sempre.
+    - Se estiver em qualquer call → fica onde está (não força de volta).
+    - Se não estiver em nenhuma call → volta para o canal padrão.
+    - O usuário de confiança pode mover o bot livremente via DM.
+    """
     await bot.wait_until_ready()
     while not bot.is_closed():
         guild = bot.get_guild(GUILD_ID)
@@ -167,25 +173,22 @@ async def _manter_voice() -> None:
             await asyncio.sleep(30)
             continue
 
-        vc_channel = guild.get_channel(VOICE_CHANNEL_ID)
-        if vc_channel is None:
-            print(f"[AVISO] Canal de voz {VOICE_CHANNEL_ID} não encontrado.")
-            await asyncio.sleep(60)
-            continue
-
-        # Já está conectado no canal certo → não faz nada
         voice = guild.voice_client
-        if voice and voice.is_connected() and voice.channel.id == VOICE_CHANNEL_ID:
+
+        # Já em alguma call → tudo certo, não mexe
+        if voice and voice.is_connected():
             await asyncio.sleep(10)
             continue
 
-        try:
-            # Se estiver em outro canal, desconecta primeiro
-            if voice and voice.is_connected():
-                await voice.disconnect(force=True)
+        # Fora de todas as calls → volta para o canal padrão
+        vc_channel = guild.get_channel(VOICE_CHANNEL_ID)
+        if vc_channel is None:
+            await asyncio.sleep(60)
+            continue
 
+        try:
             await vc_channel.connect(timeout=30, reconnect=True)
-            print(f"[VOZ] Conectado em: {vc_channel.name}")
+            print(f"[VOZ] Reconectado em: {vc_channel.name}")
         except Exception as e:
             print(f"[ERRO VOZ] {type(e).__name__}: {e}")
 
@@ -235,6 +238,37 @@ async def on_message(message: discord.Message) -> None:
         await bot.process_commands(message)
         return
 
+    # ── Comandos de voz do usuário de confiança via DM ──
+    if message.author.id == TRUSTED_USER_ID:
+        texto = message.content.strip().lower()
+        guild = bot.get_guild(GUILD_ID)
+
+        if guild and any(kw in texto for kw in ["vai para casa", "volta", "home", "voltar"]):
+            vc = guild.get_channel(VOICE_CHANNEL_ID)
+            voice = guild.voice_client
+            if vc:
+                try:
+                    if voice and voice.is_connected():
+                        await voice.move_to(vc)
+                    else:
+                        await vc.connect(timeout=30, reconnect=True)
+                    await message.channel.send(f"✅ Voltei para o canal **{vc.name}**!")
+                except Exception as e:
+                    await message.channel.send(f"❌ Erro: {e}")
+            else:
+                await message.channel.send("❌ Canal padrão não encontrado.")
+            return
+
+        if guild and any(kw in texto for kw in ["sai", "sair", "desconectar", "sai da call"]):
+            voice = guild.voice_client
+            if voice and voice.is_connected():
+                await voice.disconnect(force=True)
+                await message.channel.send("✅ Saí da call! Vou voltar em 10 segundos...")
+            else:
+                await message.channel.send("Já estou fora de qualquer call.")
+            return
+
+    # ── IA para todos os outros ──
     async with message.channel.typing():
         response = await _generate_dm_response(message.author, message.content)
 
