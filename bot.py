@@ -471,41 +471,51 @@ async def on_member_update(before: discord.Member, after: discord.Member) -> Non
 
     for role_id in after_role_ids - before_role_ids:
         if role_id in MONITORED_ROLES:
-            await _send_promotion_message(after, MONITORED_ROLES[role_id])
+            new_role = MONITORED_ROLES[role_id]
+            # Cargo anterior monitorado (se tinha algum)
+            old_role = next(
+                (MONITORED_ROLES[r] for r in before_role_ids if r in MONITORED_ROLES), None
+            )
+            await _send_promotion_message(after, old_role, new_role)
 
     for role_id in before_role_ids - after_role_ids:
         if role_id in MONITORED_ROLES:
-            await _send_demotion_message(after, MONITORED_ROLES[role_id])
+            lost_role = MONITORED_ROLES[role_id]
+            # Cargo atual monitorado após a remoção (se ainda tem algum)
+            new_role = next(
+                (MONITORED_ROLES[r] for r in after_role_ids if r in MONITORED_ROLES), None
+            )
+            await _send_demotion_message(after, lost_role, new_role)
 
 
-async def _send_promotion_message(member: discord.Member, role_name: str) -> None:
+async def _send_promotion_message(
+    member: discord.Member, old_role: str | None, new_role: str
+) -> None:
     channel = member.guild.get_channel(ANNOUNCEMENTS_CHANNEL_ID)
     if channel is None:
-        print(f"[ERRO] Canal {ANNOUNCEMENTS_CHANNEL_ID} não encontrado.")
         return
-    embed = discord.Embed(
-        description=f"🆙 {member.mention} **subiu de cargo!**\nAgora é **{role_name}** no Clã ONLINE!",
-        color=0x2ecc71,
-        timestamp=discord.utils.utcnow(),
-    )
-    embed.set_footer(text="Clã ONLINE • NerdZone")
+    if old_role:
+        desc = f"🆙 {member.mention} **subiu de cargo!**\n**{old_role}** → **{new_role}**"
+    else:
+        desc = f"🆙 {member.mention} **ganhou o cargo {new_role}!**"
+    embed = discord.Embed(description=desc, color=0x2ecc71, timestamp=discord.utils.utcnow())
     await channel.send(embed=embed)
-    print(f"[PROMOÇÃO] {member.display_name} → {role_name}")
+    print(f"[PROMOÇÃO] {member.display_name}: {old_role} → {new_role}")
 
 
-async def _send_demotion_message(member: discord.Member, role_name: str) -> None:
+async def _send_demotion_message(
+    member: discord.Member, lost_role: str, new_role: str | None
+) -> None:
     channel = member.guild.get_channel(ANNOUNCEMENTS_CHANNEL_ID)
     if channel is None:
-        print(f"[ERRO] Canal {ANNOUNCEMENTS_CHANNEL_ID} não encontrado.")
         return
-    embed = discord.Embed(
-        description=f"⬇️ {member.mention} **desceu de cargo.**\nPerdeu o cargo **{role_name}** no Clã ONLINE.",
-        color=0xe74c3c,
-        timestamp=discord.utils.utcnow(),
-    )
-    embed.set_footer(text="Clã ONLINE • NerdZone")
+    if new_role:
+        desc = f"⬇️ {member.mention} **desceu de cargo.**\n**{lost_role}** → **{new_role}**"
+    else:
+        desc = f"⬇️ {member.mention} **perdeu o cargo {lost_role}.**"
+    embed = discord.Embed(description=desc, color=0xe74c3c, timestamp=discord.utils.utcnow())
     await channel.send(embed=embed)
-    print(f"[REBAIXAMENTO] {member.display_name} ← {role_name}")
+    print(f"[REBAIXAMENTO] {member.display_name}: {lost_role} → {new_role}")
 
 
 # ──────────────────────────────────────────────
