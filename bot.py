@@ -13,6 +13,7 @@ from aiohttp import web
 GUILD_ID = 1500320169891856425
 ANNOUNCEMENTS_CHANNEL_ID = 1500348773786849290
 APPLICATIONS_CHANNEL_ID = 1503420729146736731
+VOICE_CHANNEL_ID = 1500353607877394512
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 
@@ -135,7 +136,7 @@ intents.members = True
 intents.guilds = True
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="/", intents=intents)
 
 
 # ──────────────────────────────────────────────
@@ -152,6 +153,43 @@ async def on_ready() -> None:
         print("[OK] IA (Gemini) ativada para conversas por DM.")
     else:
         print("[AVISO] GEMINI_API_KEY não definida — DM usará modo básico.")
+
+    # Conecta e mantém no canal de voz para sempre
+    bot.loop.create_task(_manter_voice())
+
+
+async def _manter_voice() -> None:
+    """Entra no canal de voz e reconecta automaticamente se cair."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        guild = bot.get_guild(GUILD_ID)
+        if guild is None:
+            await asyncio.sleep(30)
+            continue
+
+        vc_channel = guild.get_channel(VOICE_CHANNEL_ID)
+        if vc_channel is None:
+            print(f"[AVISO] Canal de voz {VOICE_CHANNEL_ID} não encontrado.")
+            await asyncio.sleep(60)
+            continue
+
+        # Já está conectado no canal certo → não faz nada
+        voice = guild.voice_client
+        if voice and voice.is_connected() and voice.channel.id == VOICE_CHANNEL_ID:
+            await asyncio.sleep(10)
+            continue
+
+        try:
+            # Se estiver em outro canal, desconecta primeiro
+            if voice and voice.is_connected():
+                await voice.disconnect(force=True)
+
+            await vc_channel.connect(timeout=30, reconnect=True)
+            print(f"[VOZ] Conectado em: {vc_channel.name}")
+        except Exception as e:
+            print(f"[ERRO VOZ] {type(e).__name__}: {e}")
+
+        await asyncio.sleep(10)
 
 
 # ──────────────────────────────────────────────
