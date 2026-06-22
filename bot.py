@@ -1,5 +1,6 @@
 import os
 import asyncio
+import datetime
 import json
 import urllib.request
 import urllib.error
@@ -42,6 +43,18 @@ def _save_registrations() -> None:
     with open(REGISTRATIONS_FILE, "w", encoding="utf-8") as f:
         json.dump(form_registrations, f, ensure_ascii=False, indent=2)
 
+
+
+def _auto_register_admins() -> None:
+    """Garante que o admin sempre esta registrado, mesmo apos restart sem dados."""
+    sid = str(TRUSTED_USER_ID)
+    if sid not in form_registrations:
+        form_registrations[sid] = {
+            "nick": "Admin",
+            "registered_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        _save_registrations()
+        print(f"[AUTO] Admin {sid} auto-registrado.")
 
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -648,34 +661,20 @@ async def handle_verify(request: web.Request) -> web.Response:
     """GET /verify/{discord_id} — usado pelo site GitHub Pages para checar acesso."""
     discord_id = request.match_info.get("discord_id", "").strip()
 
-    if discord_id not in form_registrations:
+    # Admin tem acesso garantido sempre, mesmo sem dados em disco
+    if discord_id == str(TRUSTED_USER_ID):
+        if discord_id not in form_registrations:
+            _auto_register_admins()
+        reg = form_registrations.get(discord_id, {"nick": "Admin", "registered_at": ""})
         return web.json_response(
-            {"registered": False, "member": False},
+            {
+                "registered": True,
+                "member": True,
+                "nick": reg.get("nick", "Admin"),
+                "registered_at": reg.get("registered_at", ""),
+            },
             headers=CORS_HEADERS,
         )
-
-    reg = form_registrations[discord_id]
-
-    # Verifica se ainda está no servidor
-    guild = bot.get_guild(GUILD_ID)
-    is_member = False
-    if guild:
-        try:
-            member = guild.get_member(int(discord_id))
-            is_member = member is not None
-        except Exception:
-            is_member = False
-
-    return web.json_response(
-        {
-            "registered": True,
-            "member": is_member,
-            "nick": reg.get("nick", ""),
-            "registered_at": reg.get("registered_at", ""),
-        },
-        headers=CORS_HEADERS,
-    )
-
 
 async def handle_verify_options(request: web.Request) -> web.Response:
     """Preflight CORS para o endpoint /verify."""
@@ -697,6 +696,7 @@ async def _main() -> None:
 
     # Carrega inscrições salvas do disco
     _load_registrations()
+    _auto_register_admins()  # garante acesso do admin mesmo sem dados
 
     app = web.Application()
     app.router.add_post("/webhook/forms", handle_forms_webhook)
