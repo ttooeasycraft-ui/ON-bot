@@ -16,6 +16,8 @@ ANNOUNCEMENTS_CHANNEL_ID = 1500348773786849290
 APPLICATIONS_CHANNEL_ID = 1503420729146736731
 VOICE_CHANNEL_ID = 1515534592344588328
 TRUSTED_USER_ID = 1443669292435509260  # pedroeana_33156 — pode mover o bot
+SECOND_ADMIN_ID = 1467333025430900860   # segundo admin do clã
+ADMIN_IDS: set[int] = {TRUSTED_USER_ID, SECOND_ADMIN_ID}
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 
@@ -46,15 +48,19 @@ def _save_registrations() -> None:
 
 
 def _auto_register_admins() -> None:
-    """Garante que o admin sempre esta registrado, mesmo apos restart sem dados."""
-    sid = str(TRUSTED_USER_ID)
-    if sid not in form_registrations:
-        form_registrations[sid] = {
-            "nick": "Admin",
-            "registered_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        }
+    """Garante que todos os admins estao registrados, mesmo apos restart sem dados."""
+    changed = False
+    for admin_id in ADMIN_IDS:
+        sid = str(admin_id)
+        if sid not in form_registrations:
+            form_registrations[sid] = {
+                "nick": "Admin",
+                "registered_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }
+            print(f"[AUTO] Admin {sid} auto-registrado.")
+            changed = True
+    if changed:
         _save_registrations()
-        print(f"[AUTO] Admin {sid} auto-registrado.")
 
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -661,8 +667,13 @@ async def handle_verify(request: web.Request) -> web.Response:
     """GET /verify/{discord_id} — usado pelo site GitHub Pages para checar acesso."""
     discord_id = request.match_info.get("discord_id", "").strip()
 
-    # Admin tem acesso garantido sempre, mesmo sem dados em disco
-    if discord_id == str(TRUSTED_USER_ID):
+    # Admins têm acesso garantido sempre, mesmo sem dados em disco
+    try:
+        is_admin = int(discord_id) in ADMIN_IDS
+    except (ValueError, TypeError):
+        is_admin = False
+
+    if is_admin:
         if discord_id not in form_registrations:
             _auto_register_admins()
         reg = form_registrations.get(discord_id, {"nick": "Admin", "registered_at": ""})
@@ -675,6 +686,36 @@ async def handle_verify(request: web.Request) -> web.Response:
             },
             headers=CORS_HEADERS,
         )
+
+    # Membros normais: checar registro e presença no servidor
+    if discord_id not in form_registrations:
+        return web.json_response(
+            {"registered": False, "member": False},
+            headers=CORS_HEADERS,
+        )
+
+    reg = form_registrations[discord_id]
+
+    # Verifica se ainda está no servidor
+    guild = bot.get_guild(GUILD_ID)
+    is_member = False
+    if guild:
+        try:
+            member = guild.get_member(int(discord_id))
+            is_member = member is not None
+        except Exception:
+            is_member = False
+
+    return web.json_response(
+        {
+            "registered": True,
+            "member": is_member,
+            "nick": reg.get("nick", ""),
+            "registered_at": reg.get("registered_at", ""),
+        },
+        headers=CORS_HEADERS,
+    )
+
 
 async def handle_verify_options(request: web.Request) -> web.Response:
     """Preflight CORS para o endpoint /verify."""
